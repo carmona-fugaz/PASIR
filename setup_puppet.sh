@@ -1,52 +1,103 @@
 #!/bin/bash
-set -e
 
-echo "🚀 Instalando Puppet 7 (agente y servidor) en Rocky Linux 9..."
-
-# 1. Eliminar cualquier release anterior
-dnf remove -y puppet-release || true
-
-# 2. Instalar el repositorio oficial de Puppet 7
-dnf install -y https://yum.puppet.com/puppet7-release-el-9.noarch.rpm
-
-# 3. Limpiar y actualizar la caché
-dnf clean all
-dnf makecache
-
-# 4. Instalar el agente y el servidor
-dnf install -y puppet-agent puppetserver --allowerasing
-
-# 5. Configurar memoria del servidor (ajusta según tu RAM)
-echo "🛠️ Configurando memoria del Puppet Server..."
-sed -i 's/^JAVA_ARGS=.*/JAVA_ARGS="-Xms512m -Xmx512m"/' /etc/sysconfig/puppetserver
-
-# 6. Configurar puppet.conf para usar el propio servidor
-echo "📄 Escribiendo configuración básica en /etc/puppetlabs/puppet/puppet.conf..."
-cat << EOF > /etc/puppetlabs/puppet/puppet.conf
-[main]
-certname = $(hostname -f)
-server = $(hostname -f)
-environment = production
-runinterval = 1h
-EOF
-
-# 7. Habilitar y arrancar servicios
-echo "🚦 Habilitando y arrancando servicios..."
-systemctl enable --now puppetserver
-systemctl enable --now puppet
-
-# 8. (Opcional) Abrir puerto 8140 en el firewall
-if command -v firewall-cmd &> /dev/null; then
-  echo "🌐 Configurando firewall para permitir conexiones en el puerto 8140..."
-  firewall-cmd --add-port=8140/tcp --permanent
-  firewall-cmd --reload
+# Comprobación de permisos
+if [[ $EUID -ne 0 ]]; then
+    echo "Este script debe ejecutarse como root."
+    exit 1
 fi
 
-# 9. Mostrar estado
-echo ""
-echo "✅ Instalación completa de Puppet 7."
-echo "📡 Puppet Server corriendo en: https://$(hostname -f):8140"
-echo ""
-echo "🔐 Para firmar certificados de agentes usa:"
-echo "   /opt/puppetlabs/bin/puppetserver ca list"
-echo "   /opt/puppetlabs/bin/puppetserver ca sign --certname NOMBRE_DEL_AGENTE"
+# IPs NTP públicas personalizadas para el servicio chrony
+NTP_IP1=""
+NTP_IP2=""
+NTP_IP3=""
+
+# Añadir repositorio de Puppet
+echo "Configurando repositorio Puppet..."
+dnf install -y https://yum.puppet.com/puppet-release-el-9.noarch.rpm
+dnf update -y
+
+echo "¿Qué deseas instalar?"
+echo "1) Puppet Server"
+echo "2) Puppet Agent"
+read -rp "Selecciona una opción [1-2]: " opcion
+
+abrir_puerto_8140_iptables() {
+    echo "Configurando iptables para permitir el puerto 8140..."
+    iptables -C INPUT -p tcp --dport 8140 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 8140 -j ACCEPT
+    service iptables save 2>/dev/null || iptables-save > /etc/sysconfig/iptables
+}
+
+configurar_chrony() {
+    echo "Instalando y configurando chrony..."
+    dnf install -y chrony
+
+    echo "Configurando NTP con servidores personalizados..."
+    cp /etc/chrony.conf /etc/chrony.conf.bak
+
+    # Limpia servidores previos y configura los nuevos
+    sed -i '/^server /d' /etc/chrony.conf
+    sed -i '/^pool /d' /etc/chrony.conf
+
+    echo "server $NTP_IP1 iburst" >> /etc/chrony.conf
+    echo "server $NTP_IP2 iburst" >> /etc/chrony.conf
+    echo "server $NTP_IP3 iburst" >> /etc/chrony.conf
+
+    systemctl enable --now chronyd
+    echo "Verificando estado de sincronización:"
+    chronyc sources
+}
+
+if [[ "$opcion" == "1" ]]; then
+    echo "Instalando Puppet Server..."
+    dnf install -y puppetserver
+
+    echo "Configurando Puppet Server..."
+    sed -i 's/^JAVA_ARGS=.*$/JAVA_ARGS="-Xms512m -Xmx512m"/' /etc/sysconfig/puppetserver
+
+    read -rp "¿Deseas habilitar autosign para cualquier agente? (s/n): " autosign
+    if [[ "$autosign" == "s" || "$autosign" == "S" ]]; then
+        echo "*" > /etc/puppetlabs/puppet/autosign.conf
+    else
+        echo "Introduce los FQDN permitidos para los agentes (uno por línea, finaliza con línea vacía):"
+        > /etc/puppetlabs/puppet/autosign.conf
+        while true; do
+            read -rp "FQDN: " fqdn
+            [[ -z "$fqdn" ]] && break
+            echo "$fqdn" >> /etc/puppetlabs/puppet/autosign.conf
+        done
+    fi
+
+    systemctl enable --now puppetserver
+    abrir_puerto_8140_iptables
+    configurar_chrony
+
+    echo "✅ Puppet Server instalado con NTP sincronizado."
+
+elif [[ "$opcion" == "2" ]]; then
+    echo "Instalando Puppet Agent..."
+    dnf install -y puppet-agent
+
+    read -rp "Introduce el FQDN del servidor Puppet: " puppet_server
+    /opt/puppetlabs/bin/puppet config set server "$puppet_server" --section main
+    /opt/puppetlabs/bin/puppet config set environment production --section main
+
+    hostname_fqdn=$(hostname -f)
+    echo "FQDN detectado: $hostname_fqdn"
+    read -rp "¿Usar este FQDN como nombre del agente? (s/n): " usar_fqdn
+    if [[ "$usar_fqdn" != "s" && "$usar_fqdn" != "S" ]]; then
+        read -rp "Introduce el nuevo FQDN para este agente: " nuevo_fqdn
+        hostnamectl set-hostname "$nuevo_fqdn"
+    fi
+
+    systemctl enable --now puppet
+    configurar_chrony
+
+    echo "Forzando primer contacto con el servidor Puppet..."
+    /opt/puppetlabs/bin/puppet agent --test
+
+    echo "✅ Puppet Agent instalado, sincronizado con NTP y configurado."
+
+else
+    echo "❌ Opción no válida."
+    exit 1
+fi
