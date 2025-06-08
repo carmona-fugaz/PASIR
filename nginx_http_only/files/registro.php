@@ -1,5 +1,34 @@
 <?php
-// registro.php
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    $usuario = $_POST['usuario'] ?? '';
+    $contraseña = $_POST['contraseña'] ?? '';
+
+    if (!empty($usuario) && !empty($contraseña)) {
+        try {
+            $db = new PDO('pgsql:host=postgres;port=5432;dbname=postgres', 'postgres', 'postgres');
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $stmt = $db->prepare("INSERT INTO users (username, password) VALUES (:username, :password)");
+            $stmt->execute([
+                ':username' => $usuario,
+                ':password' => $contraseña
+            ]);
+
+            echo "<script>
+                alert('Usuario registrado exitosamente: $usuario');
+                window.location.href = 'login.php';
+            </script>";
+        } catch (PDOException $e) {
+            if ($e->getCode() == 23505) {
+                echo "<script>alert('El usuario ya existe');</script>";
+            } else {
+                echo "<script>alert('Error al registrar usuario: " . $e->getMessage() . "');</script>";
+            }
+        }
+    } else {
+        echo "<script>alert('Por favor, completa todos los campos');</script>";
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">

@@ -1,6 +1,34 @@
 <?php
-// login.php
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    $usuario = $_POST['usuario'] ?? '';
+    $contraseña = $_POST['contraseña'] ?? '';
+
+    if (!empty($usuario) && !empty($contraseña)) {
+        try {
+            $db = new PDO('pgsql:host=postgres;port=5432;dbname=postgres', 'postgres', 'postgres');
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $stmt = $db->prepare("SELECT * FROM users WHERE username = :username AND password = :password");
+            $stmt->execute([
+                ':username' => $usuario,
+                ':password' => $contraseña
+            ]);
+
+            if ($stmt->rowCount() > 0) {
+                header('Location: servicios_google.php');
+                exit();
+            } else {
+                echo "<script>alert('Credenciales incorrectas');</script>";
+            }
+        } catch (PDOException $e) {
+            echo "<script>alert('Error de conexión a la base de datos: " . $e->getMessage() . "');</script>";
+        }
+    } else {
+        echo "<script>alert('Por favor, completa todos los campos');</script>";
+    }
+}
 ?>
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
